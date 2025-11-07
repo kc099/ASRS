@@ -7,6 +7,7 @@ ASRS WAREHOUSE MANAGEMENT SYSTEM - MAIN APPLICATION WINDOW
 import json
 import os
 import sqlite3
+import datetime
 
 
 
@@ -14,7 +15,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, 
     QTableWidgetItem, QPushButton, QLineEdit, QLabel, QMessageBox, 
     QComboBox, QScrollArea, QGroupBox, QSplitter, QFrame, QTextEdit, 
-    QStackedWidget, QGridLayout, QApplication, QFormLayout
+    QStackedWidget, QGridLayout, QApplication, QFormLayout, QSizePolicy
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QPixmap
@@ -25,7 +26,7 @@ from ..config import (
 )
 from ..database import init_database, get_analytics_data
 from ..core import Rack
-from ..pathfinding import calculate_distance
+from ..pathfinding import calculate_distance, a_star_path
 from ..visualization import Realistic3DViewer
 from .analytics_dashboard import AnalyticsDashboard
 
@@ -49,6 +50,7 @@ class BusinessASRSMainWindow(QMainWindow):
         self.operation_mode = 'idle'
         self.pending_box_id = None
         self.pending_position = None
+        self.pending_size = None
         self.grid_cells = []
         
         # Professional theme
@@ -124,10 +126,20 @@ class BusinessASRSMainWindow(QMainWindow):
         self.animation_timer = QTimer()
         self.animation_timer.timeout.connect(self.animate_trolley)
 
-        # Set responsive window size and center it
-        screen_geometry = QApplication.primaryScreen().availableGeometry()
-        self.resize(int(screen_geometry.width() * 0.9), int(screen_geometry.height() * 0.9))
-        self.move(screen_geometry.center() - self.rect().center())
+        # Get screen size and calculate responsive dimensions
+        screen = QApplication.primaryScreen().geometry()
+        self.screen_width = screen.width()
+        self.screen_height = screen.height()
+
+        # Set responsive window size
+        window_width = min(self.screen_width - 100, 1400)
+        window_height = min(self.screen_height - 100, 1000)
+        self.setGeometry(50, 50, window_width, window_height)
+
+        # Maximize on large screens (TVs, large monitors)
+        self.should_maximize = False
+        if self.screen_width >= 1920 and self.screen_height >= 1080:
+            self.should_maximize = True
 
     def setup_ui(self):
         """Setup main UI"""
@@ -169,6 +181,7 @@ class BusinessASRSMainWindow(QMainWindow):
         status_bar = self.statusBar()
         status_bar.setStyleSheet(f"background-color: {COLORS['secondary']}; color: white; padding: 5px;")
         status_bar.showMessage("✅ System Ready")
+        
     
     def create_top_bar(self):
         """Create top navigation bar"""
@@ -216,6 +229,10 @@ class BusinessASRSMainWindow(QMainWindow):
         save_btn = QPushButton("💾 Save")
         save_btn.clicked.connect(self.save_state)
         layout.addWidget(save_btn)
+
+        reset_btn = QPushButton("🔄 Reset")
+        reset_btn.clicked.connect(self.reset_warehouse)
+        layout.addWidget(reset_btn)
         
         return top_bar
     
@@ -232,14 +249,7 @@ class BusinessASRSMainWindow(QMainWindow):
         # Model selection
         store_layout.addWidget(QLabel("Select Model:"))
         self.model_combo = QComboBox()
-        self.load_models()
         store_layout.addWidget(self.model_combo)
-        
-        # SKU input
-        store_layout.addWidget(QLabel("SKU:"))
-        self.sku_input = QLineEdit()
-        self.sku_input.setPlaceholderText("Enter SKU code")
-        store_layout.addWidget(self.sku_input)
         
         # Description
         store_layout.addWidget(QLabel("Description:"))
@@ -258,19 +268,35 @@ class BusinessASRSMainWindow(QMainWindow):
         # Retrieve Section
         retrieve_group = QGroupBox("📤 Retrieve Item")
         retrieve_layout = QVBoxLayout(retrieve_group)
-        
-        retrieve_layout.addWidget(QLabel("Box ID:"))
-        self.retrieve_input = QLineEdit()
-        self.retrieve_input.setPlaceholderText("Enter Box ID")
-        retrieve_layout.addWidget(self.retrieve_input)
-        
+
+        # Retrieval Method Selection
+        retrieve_layout.addWidget(QLabel("Retrieval Method:"))
+        self.retrieval_method_combo = QComboBox()
+        self.retrieval_method_combo.addItems(['By ID', 'FIFO (First In)', 'LIFO (Last In)'])
+        self.retrieval_method_combo.currentTextChanged.connect(self.on_retrieval_method_changed)
+        retrieve_layout.addWidget(self.retrieval_method_combo)
+
+        # Box selection dropdown
+        retrieve_layout.addWidget(QLabel("Select Box:"))
+        self.retrieve_box_combo = QComboBox()
+        self.retrieve_box_combo.setMinimumWidth(200)
+        retrieve_layout.addWidget(self.retrieve_box_combo)
+
+        # Refresh button for box list
+        refresh_list_btn = QPushButton("🔄 Refresh List")
+        refresh_list_btn.clicked.connect(self.refresh_retrieval_list)
+        retrieve_layout.addWidget(refresh_list_btn)
+
         retrieve_btn = QPushButton("➖ Retrieve Item")
         retrieve_btn.setStyleSheet(f"background-color: {COLORS['warning']}; padding: 12px; font-size: 12px;")
-        retrieve_btn.clicked.connect(self.retrieve_item)
+        retrieve_btn.clicked.connect(self.retrieve_item_dispatcher)
         retrieve_layout.addWidget(retrieve_btn)
-        
+
         layout.addWidget(retrieve_group)
-        
+
+        # Load models after both combo boxes are created
+        self.load_models()
+
         # Quick Stats
         stats_group = QGroupBox("📊 Quick Stats")
         stats_layout = QVBoxLayout(stats_group)
@@ -291,16 +317,29 @@ class BusinessASRSMainWindow(QMainWindow):
         panel = QFrame()
         panel.setStyleSheet(f"background-color: {COLORS['dark']};")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(0)
 
         # Stacked widget for view switching
         self.view_stack = QStackedWidget()
+        self.view_stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        # Grid visualization
+        # --- Grid visualization page ---
+        grid_page_widget = QWidget()
+        grid_page_layout = QHBoxLayout(grid_page_widget)
+        grid_page_layout.setContentsMargins(0,0,0,0)
+        grid_page_layout.setSpacing(10)
+
         self.grid_widget = self.create_grid_visualization()
-        self.view_stack.addWidget(self.grid_widget)  # Index 0
+        grid_page_layout.addWidget(self.grid_widget, 1) # Give grid more space
 
-        # 3D visualization
+        legend_group = self.create_zone_legend_group()
+        legend_group.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred) # Fixed width
+        grid_page_layout.addWidget(legend_group)
+
+        self.view_stack.addWidget(grid_page_widget)  # Index 0
+
+        # --- 3D visualization page ---
         self.view_3d_widget = Realistic3DViewer(self.rack)
         self.view_stack.addWidget(self.view_3d_widget)  # Index 1
 
@@ -309,7 +348,13 @@ class BusinessASRSMainWindow(QMainWindow):
         return panel
     
     def create_grid_visualization(self):
-        """Create 2D grid visualization with zone labels."""
+        """Create 2D grid visualization with zone labels and numbering."""
+        # Main container for this view
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setSpacing(10)
+
+        # Grid Scroll Area
         scroll = QScrollArea()
         scroll.setWidgetResizable(False)
         scroll.setStyleSheet(f"background-color: {COLORS['dark']};")
@@ -320,7 +365,21 @@ class BusinessASRSMainWindow(QMainWindow):
         
         cell_size = 18
         
-        # Add zone labels to the first column
+        # Add column numbers (starting from column 2 to leave space for zone and row numbers)
+        for col in range(GRID_COLS):
+            col_label = QLabel(str(col))
+            col_label.setAlignment(Qt.AlignCenter)
+            col_label.setStyleSheet("color: white; font-size: 9px;")
+            grid_layout.addWidget(col_label, 0, col + 2)
+
+        # Add row numbers (starting from row 1)
+        for row in range(GRID_ROWS):
+            row_label = QLabel(str(row))
+            row_label.setAlignment(Qt.AlignCenter)
+            row_label.setStyleSheet("color: white; font-size: 9px;")
+            grid_layout.addWidget(row_label, row + 1, 1)
+
+        # Add zone labels to the first column (row 1 onwards)
         for zone_id, zone_info in MODEL_ZONES.items():
             start_row, end_row = zone_info['range']
             row_span = end_row - start_row + 1
@@ -333,26 +392,29 @@ class BusinessASRSMainWindow(QMainWindow):
                 font-weight: bold;
                 border-radius: 5px;
                 padding: 5px;
+                font-size: 10px;
             """)
-            grid_layout.addWidget(zone_label, start_row, 0, row_span, 1)
+            grid_layout.addWidget(zone_label, start_row + 1, 0, row_span, 1)
 
         self.grid_cells = []
         for row in range(GRID_ROWS):
             row_cells = []
-            # Start grid cells from column 1
+            # Start grid cells from column 2, row 1
             for col in range(GRID_COLS):
                 cell = QLabel()
                 cell.setFixedSize(cell_size, cell_size)
                 cell.setAlignment(Qt.AlignCenter)
                 
-                grid_layout.addWidget(cell, row, col + 1)
+                grid_layout.addWidget(cell, row + 1, col + 2)
                 row_cells.append(cell)
             self.grid_cells.append(row_cells)
         
         self.refresh_grid() # Initial population of grid
         
         scroll.setWidget(grid_container)
-        return scroll
+        container_layout.addWidget(scroll)
+
+        return container
     
     def create_right_panel(self):
         """Create right info panel"""
@@ -360,24 +422,6 @@ class BusinessASRSMainWindow(QMainWindow):
         panel.setStyleSheet(f"background-color: {COLORS['sidebar']}; padding: 15px;")
         layout = QVBoxLayout(panel)
         
-        # Zone Legend
-        legend_group = QGroupBox("🗺️ Zone Legend")
-        legend_layout = QFormLayout(legend_group)
-        legend_layout.setSpacing(10)
-
-        for zone_id, zone_info in MODEL_ZONES.items():
-            color_label = QLabel()
-            color_label.setFixedSize(20, 20)
-            color_label.setStyleSheet(f"background-color: {zone_info['color'].name()}; border-radius: 3px;")
-            legend_layout.addRow(color_label, QLabel(zone_info['name']))
-
-        empty_label = QLabel()
-        empty_label.setFixedSize(20, 20)
-        empty_label.setStyleSheet(f"background-color: {COLORS['danger']}; border-radius: 3px;")
-        legend_layout.addRow(empty_label, QLabel("Empty Slot"))
-
-        layout.addWidget(legend_group)
-
         # Operations Log
         log_group = QGroupBox("📋 Operations Log")
         log_layout = QVBoxLayout(log_group)
@@ -412,6 +456,36 @@ class BusinessASRSMainWindow(QMainWindow):
         
         return panel
     
+    def create_zone_legend_group(self):
+        """Create zone legend group box"""
+        legend_group = QGroupBox("🗺️ Zone Legend")
+        legend_layout = QVBoxLayout(legend_group)
+        legend_layout.setSpacing(10)
+        legend_layout.setAlignment(Qt.AlignTop)
+
+        for zone_id, zone_info in MODEL_ZONES.items():
+            color_label = QLabel()
+            color_label.setFixedSize(20, 20)
+            color_label.setStyleSheet(f"background-color: {zone_info['color'].name()}; border-radius: 3px;")
+            
+            item_layout = QHBoxLayout()
+            item_layout.addWidget(color_label)
+            item_layout.addWidget(QLabel(zone_info['name']))
+            legend_layout.addLayout(item_layout)
+
+        empty_label = QLabel()
+        empty_label.setFixedSize(20, 20)
+        empty_label.setStyleSheet(f"background-color: {COLORS['secondary']}; border-radius: 3px;")
+        
+        item_layout = QHBoxLayout()
+        item_layout.addWidget(empty_label)
+        item_layout.addWidget(QLabel("Empty Slot"))
+        legend_layout.addLayout(item_layout)
+
+        legend_layout.addStretch()
+        
+        return legend_group
+    
     def load_models(self):
         """Load box models from database"""
         conn = sqlite3.connect(DATABASE)
@@ -419,20 +493,22 @@ class BusinessASRSMainWindow(QMainWindow):
         cursor.execute('SELECT id, model_name, length, width FROM box_models')
         models = cursor.fetchall()
         conn.close()
-        
+
         self.model_combo.clear()
         for model_id, name, length, width in models:
             self.model_combo.addItem(f"{name} ({length}×{width})", model_id)
+
+        # Initialize retrieval box list
+        self.refresh_retrieval_list()
     
     def store_item(self):
         """Store item in warehouse"""
-        model_id = self.model_combo.currentData()
-        sku = self.sku_input.text().strip()
-        description = self.desc_input.text().strip()
-        
-        if not sku:
-            self.show_alert("Missing SKU", "Please enter a SKU (Stock Keeping Unit) for the item.", "warning")
+        if self.is_animating:
+            self.show_alert("Operation in Progress", "Please wait for the current operation to complete.", "warning")
             return
+
+        model_id = self.model_combo.currentData()
+        description = self.desc_input.text().strip()
         
         # Get model info
         conn = sqlite3.connect(DATABASE)
@@ -460,7 +536,7 @@ class BusinessASRSMainWindow(QMainWindow):
         cursor.execute('''
             INSERT INTO boxes (model_id, sku, description, level, status)
             VALUES (?, ?, ?, ?, 'stored')
-        ''', (model_id, sku, description, slot[0] % RACK_HEIGHT_LEVELS))
+        ''', (model_id, "", description, slot[0] % RACK_HEIGHT_LEVELS))
         box_id = cursor.lastrowid
         
         # Calculate distance
@@ -475,63 +551,172 @@ class BusinessASRSMainWindow(QMainWindow):
         conn.commit()
         conn.close()
         
-        # Update rack
-        self.rack.place_box(box_id, slot[0], slot[1], size)
+        # Animate trolley
+        path, _ = a_star_path((ORIGIN_ROW, ORIGIN_COL), slot, self.rack)
+        return_path, _ = a_star_path(slot, (ORIGIN_ROW, ORIGIN_COL), self.rack)
+        self.trolley_path = path + return_path
+        self.pending_box_id = box_id
+        self.pending_position = slot
+        self.pending_size = size
+        self.operation_mode = 'storing'
         
-        # UI updates
-        self.log_text.append(f"✅ Stored Box #{box_id} (SKU: {sku}) at ({slot[0]}, {slot[1]}) - Distance: {distance}m")
-        self.sku_input.clear()
-        self.desc_input.clear()
-        self.update_stats()
-        self.update_inventory_table()
-        self.refresh_grid()
-        
-        self.show_alert("Storage Successful", f"Item stored successfully!\n\nBox ID: {box_id}\nLocation: Row {slot[0]}, Column {slot[1]}", "info")
+        self.animation_timer.start(100) # ms for each step
+        self.is_animating = True
     
-    def retrieve_item(self):
-        """Retrieve item from warehouse"""
-        box_id_text = self.retrieve_input.text().strip()
-        
-        if not box_id_text:
-            self.show_alert("Missing Box ID", "Please enter a Box ID for retrieval.", "warning")
-            return
-        
-        try:
-            box_id = int(box_id_text)
-        except ValueError:
-            self.show_alert("Invalid Box ID", "Please enter a valid numeric Box ID.", "error")
-            return
-        
-        if box_id not in self.rack.box_locations:
-            self.show_alert("Box Not Found", "The specified box was not found in the warehouse.\n\nPlease check the Box ID and try again.", "error")
-            return
-        
-        # Get location
-        row, col, size = self.rack.box_locations[box_id]
-        distance = calculate_distance((row, col), (ORIGIN_ROW, ORIGIN_COL))
-        
-        # Remove from rack
-        self.rack.remove_box(box_id)
-        
-        # Update database
+    def refresh_retrieval_list(self):
+        """Refresh the retrieval box list based on selected method"""
+        method = self.retrieval_method_combo.currentText()
+        self.retrieve_box_combo.clear()
+
         conn = sqlite3.connect(DATABASE)
         cursor = conn.cursor()
-        cursor.execute('UPDATE boxes SET status="retrieved", retrieval_date=CURRENT_TIMESTAMP WHERE box_id=?', (box_id,))
-        cursor.execute('''
-            INSERT INTO operations_log (box_id, operation, distance_traveled)
-            VALUES (?, 'RETRIEVED', ?)
-        ''', (box_id, distance))
-        conn.commit()
+
+        if method == 'By ID':
+            # Show all boxes sorted by ID
+            cursor.execute('''
+                SELECT b.box_id, bm.model_name, b.description, b.placement_date
+                FROM boxes b
+                JOIN box_models bm ON b.model_id = bm.id
+                WHERE b.status = 'stored'
+                ORDER BY b.box_id ASC
+            ''')
+        elif method == 'FIFO (First In)':
+            # Show all boxes sorted by oldest first
+            cursor.execute('''
+                SELECT b.box_id, bm.model_name, b.description, b.placement_date
+                FROM boxes b
+                JOIN box_models bm ON b.model_id = bm.id
+                WHERE b.status = 'stored'
+                ORDER BY b.placement_date ASC
+            ''')
+        elif method == 'LIFO (Last In)':
+            # Show all boxes sorted by newest first
+            cursor.execute('''
+                SELECT b.box_id, bm.model_name, b.description, b.placement_date
+                FROM boxes b
+                JOIN box_models bm ON b.model_id = bm.id
+                WHERE b.status = 'stored'
+                ORDER BY b.placement_date DESC
+            ''')
+
+        results = cursor.fetchall()
         conn.close()
-        
-        # UI updates
-        self.log_text.append(f"✅ Retrieved Box #{box_id} from ({row}, {col}) - Distance: {distance}m")
-        self.retrieve_input.clear()
-        self.update_stats()
-        self.update_inventory_table()
-        self.refresh_grid()
-        
-        self.show_alert("Retrieval Successful", f"Item retrieved successfully!\n\nDistance traveled: {distance} units", "info")
+
+        if not results:
+            self.retrieve_box_combo.addItem("No items in warehouse", None)
+            return
+
+        for box_id, model_name, description, placement_date in results:
+            # Format: "Box #1 - Small-Box-1x1 - Description (2024-01-15)"
+            desc_text = description if description else "No description"
+            date_text = placement_date[:10] if placement_date else "Unknown"
+            display_text = f"Box #{box_id} - {model_name} - {desc_text} ({date_text})"
+            self.retrieve_box_combo.addItem(display_text, box_id)
+
+    def on_retrieval_method_changed(self, method):
+        """Handle retrieval method selection change"""
+        self.refresh_retrieval_list()
+
+    def retrieve_item_dispatcher(self):
+        """Dispatch to retrieve selected box from dropdown"""
+        if self.is_animating:
+            self.show_alert("Operation in Progress", "Please wait for the current operation to complete.", "warning")
+            return
+
+        box_id = self.retrieve_box_combo.currentData()
+
+        if box_id is None:
+            self.show_alert("No Box Selected", "No boxes available for retrieval.\n\nPlease store items first.", "warning")
+            return
+
+        if box_id not in self.rack.box_locations:
+            self.show_alert("Box Not Found", f"Box #{box_id} not found in the warehouse.\n\nPlease refresh the list.", "error")
+            return
+
+        method = self.retrieval_method_combo.currentText()
+
+        # Get box info for logging
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT bm.model_name FROM boxes b
+            JOIN box_models bm ON b.model_id = bm.id
+            WHERE b.box_id = ?
+        ''', (box_id,))
+        result = cursor.fetchone()
+        conn.close()
+
+        model_name = result[0] if result else "Unknown"
+
+        if method == 'FIFO (First In)':
+            log_msg = f"FIFO - Retrieving oldest box #{box_id} ({model_name})"
+        elif method == 'LIFO (Last In)':
+            log_msg = f"LIFO - Retrieving newest box #{box_id} ({model_name})"
+        else:  # By ID
+            log_msg = f"By ID - Retrieving box #{box_id} ({model_name})"
+
+        self._start_retrieval(box_id, log_msg)
+
+    def _start_retrieval(self, box_id, log_message=None):
+        """Common method to start retrieval animation"""
+        # Get location
+        row, col, size = self.rack.box_locations[box_id]
+
+        # Animate trolley
+        path, _ = a_star_path((ORIGIN_ROW, ORIGIN_COL), (row, col), self.rack)
+        return_path, _ = a_star_path((row, col), (ORIGIN_ROW, ORIGIN_COL), self.rack)
+        self.trolley_path = path + return_path
+        self.pending_box_id = box_id
+        self.operation_mode = 'retrieving'
+
+        # Log if message provided
+        if log_message:
+            self.log_text.append(f"🔄 {log_message}")
+
+        self.animation_timer.start(100) # ms for each step
+        self.is_animating = True
+
+    def complete_operation(self):
+        """Complete the operation after animation."""
+        if self.operation_mode == 'storing':
+            # Finish storing
+            box_id = self.pending_box_id
+            slot = self.pending_position
+            size = self.pending_size
+            # Update rack
+            self.rack.place_box(box_id, slot[0], slot[1], size)
+            # UI updates
+            self.log_text.append(f"✅ Stored Box #{box_id} at ({slot[0]}, {slot[1]})")
+            self.desc_input.clear()
+            self.update_stats()
+            self.update_inventory_table()
+            self.refresh_grid()
+            self.refresh_retrieval_list()  # Refresh retrieval dropdown
+            self.show_alert("Storage Successful", f"Item stored successfully!\n\nBox ID: {box_id}\nLocation: Row {slot[0]}, Column {slot[1]}", "info")
+        elif self.operation_mode == 'retrieving':
+            # Finish retrieving
+            box_id = self.pending_box_id
+            row, col, size = self.rack.box_locations[box_id]
+            distance = calculate_distance((row, col), (ORIGIN_ROW, ORIGIN_COL))
+            # Remove from rack
+            self.rack.remove_box(box_id)
+            # Update database
+            conn = sqlite3.connect(DATABASE)
+            cursor = conn.cursor()
+            cursor.execute('UPDATE boxes SET status="retrieved", retrieval_date=CURRENT_TIMESTAMP WHERE box_id=?', (box_id,))
+            cursor.execute('''
+                INSERT INTO operations_log (box_id, operation, distance_traveled)
+                VALUES (?, 'RETRIEVED', ?)
+            ''', (box_id, distance))
+            conn.commit()
+            conn.close()
+            # UI updates
+            self.log_text.append(f"✅ Retrieved Box #{box_id} from ({row}, {col}) - Distance: {distance}m")
+            self.update_stats()
+            self.update_inventory_table()
+            self.refresh_grid()
+            self.refresh_retrieval_list()  # Refresh retrieval dropdown
+            self.show_alert("Retrieval Successful", f"Item retrieved successfully!\n\nDistance traveled: {distance} units", "info")
     
     def update_stats(self):
         """Update statistics display"""
@@ -581,13 +766,19 @@ class BusinessASRSMainWindow(QMainWindow):
                 cell = self.grid_cells[row][col]
                 zone_color = self.get_zone_color(row)
                 
-                if self.rack.grid[row][col] is not None:
-                    cell.setStyleSheet(f"background-color: {zone_color.name()}; border: 1px solid black;")
+                if self.is_animating and row == self.trolley_row and col == self.trolley_col:
+                    cell.setStyleSheet(f"background-color: {COLORS['accent']}; border: 1px solid white;")
+                    cell.setText("🚚")
+                    cell.setToolTip(f"Trolley at ({row}, {col})")
+                elif self.rack.grid[row][col] is not None:
+                    cell.setStyleSheet(f"background-color: {zone_color.name()}; border: 1px solid black; font-size: 7px; color: white; font-weight: bold;")
+                    cell.setText(str(self.rack.grid[row][col]))
                     cell.setToolTip(f"Box ID: {self.rack.grid[row][col]}")
                 else:
-                    cell.setStyleSheet(f"background-color: {COLORS['danger']}; border: 1px solid {COLORS['dark']};")
+                    cell.setStyleSheet(f"background-color: {COLORS['secondary']}; border: 1px solid {COLORS['dark']};")
+                    cell.setText("")
                     cell.setToolTip(f"Empty ({row}, {col})")
-    
+        
     def get_zone_color(self, row):
         """Get zone color for row"""
         for model_id, zone_info in MODEL_ZONES.items():
@@ -681,8 +872,15 @@ class BusinessASRSMainWindow(QMainWindow):
         else:
             self.animation_timer.stop()
             self.is_animating = False
+            self.complete_operation()
             self.operation_mode = 'idle'
+            self.trolley_row = -1
+            self.trolley_col = -1
+            self.refresh_grid() # To remove trolley from grid
             self.statusBar().showMessage("✅ Operation Complete", 3000)
+        self.refresh_grid()
+
+
 
     def open_analytics(self):
         """Open analytics dashboard"""
@@ -717,6 +915,35 @@ class BusinessASRSMainWindow(QMainWindow):
         except Exception as e:
             print(f"Error loading state: {e}")
     
+    def reset_warehouse(self):
+        """Reset the entire warehouse to a clean state."""
+        if self.show_alert(
+            'Confirm Reset',
+            'Are you sure you want to reset the entire warehouse?\nThis will delete all data and cannot be undone.',
+            icon_type="question"
+        ):
+            # 1. Clear data structures
+            self.rack = Rack(GRID_ROWS, GRID_COLS)
+
+            # 2. Delete and re-init database
+            if os.path.exists(DATABASE):
+                os.remove(DATABASE)
+            init_database()
+
+            # 3. Delete save file
+            if os.path.exists(SAVE_FILE):
+                os.remove(SAVE_FILE)
+
+            # 4. Refresh UI
+            self.log_text.clear()
+            self.update_inventory_table()
+            self.update_stats()
+            self.refresh_grid()
+            self.load_models()
+
+            self.statusBar().showMessage("🔥 Warehouse Reset Successfully", 5000)
+            self.show_alert("Reset Complete", "The warehouse has been reset to its initial state.", "info")
+
     def closeEvent(self, event):
         """Handle window close"""
         if self.show_alert(

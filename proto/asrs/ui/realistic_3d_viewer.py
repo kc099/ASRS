@@ -6,12 +6,15 @@ ASRS WAREHOUSE MANAGEMENT SYSTEM - REALISTIC 3D VISUALIZATION
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, 
+    1
     QPushButton, QComboBox, QFileDialog
 )
 from PySide6.QtGui import QColor
 
 import matplotlib
 matplotlib.use('Qt5Agg')
+
+1
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure

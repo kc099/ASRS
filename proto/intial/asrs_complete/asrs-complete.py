@@ -1123,7 +1123,7 @@ class AnalyticsDashboard(QDialog):
 # ENHANCED MAIN WINDOW
 # ============================================================================
 
-class BusinessASRSMainWindow(QMainWindow):
+class BusinessASRSindow(QMainWindow):
     """Business-Grade Main Application Window"""
     
     def __init__(self):
@@ -1541,6 +1541,10 @@ class BusinessASRSMainWindow(QMainWindow):
     
     def retrieve_item(self):
         """Retrieve item from warehouse"""
+        if self.is_animating:
+            self.show_alert("Operation in Progress", "Please wait for the current operation to complete.", "warning")
+            return
+
         box_id_text = self.retrieve_input.text().strip()
         
         if not box_id_text:
@@ -1559,30 +1563,57 @@ class BusinessASRSMainWindow(QMainWindow):
         
         # Get location
         row, col, size = self.rack.box_locations[box_id]
-        distance = calculate_distance((row, col), (ORIGIN_ROW, ORIGIN_COL))
         
-        # Remove from rack
-        self.rack.remove_box(box_id)
+        # Animate trolley
+        path, _ = a_star_path((ORIGIN_ROW, ORIGIN_COL), (row, col), self.rack)
+        return_path, _ = a_star_path((row, col), (ORIGIN_ROW, ORIGIN_COL), self.rack)
+        self.trolley_path = path + return_path
+        self.pending_box_id = box_id
+        self.operation_mode = 'retrieving'
         
-        # Update database
-        conn = sqlite3.connect(DATABASE)
-        cursor = conn.cursor()
-        cursor.execute('UPDATE boxes SET status="retrieved", retrieval_date=CURRENT_TIMESTAMP WHERE box_id=?', (box_id,))
-        cursor.execute('''
-            INSERT INTO operations_log (box_id, operation, distance_traveled)
-            VALUES (?, 'RETRIEVED', ?)
-        ''', (box_id, distance))
-        conn.commit()
-        conn.close()
-        
-        # UI updates
-        self.log_text.append(f"✅ Retrieved Box #{box_id} from ({row}, {col}) - Distance: {distance}m")
-        self.retrieve_input.clear()
-        self.update_stats()
-        self.update_inventory_table()
-        self.refresh_grid()
-        
-        self.show_alert("Retrieval Successful", f"Item retrieved successfully!\n\nDistance traveled: {distance} units", "info")
+        self.animation_timer.start(100) # ms for each step
+        self.is_animating = True
+
+    def complete_operation(self):
+        """Complete the operation after animation."""
+        if self.operation_mode == 'storing':
+            # Finish storing
+            box_id = self.pending_box_id
+            slot = self.pending_position
+            size = self.pending_size
+            # Update rack
+            self.rack.place_box(box_id, slot[0], slot[1], size)
+            # UI updates
+            self.log_text.append(f"✅ Stored Box #{box_id} at ({slot[0]}, {slot[1]})")
+            self.desc_input.clear()
+            self.update_stats()
+            self.update_inventory_table()
+            self.refresh_grid()
+            self.show_alert("Storage Successful", f"Item stored successfully!\n\nBox ID: {box_id}\nLocation: Row {slot[0]}, Column {slot[1]}", "info")
+        elif self.operation_mode == 'retrieving':
+            # Finish retrieving
+            box_id = self.pending_box_id
+            row, col, size = self.rack.box_locations[box_id]
+            distance = calculate_distance((row, col), (ORIGIN_ROW, ORIGIN_COL))
+            # Remove from rack
+            self.rack.remove_box(box_id)
+            # Update database
+            conn = sqlite3.connect(DATABASE)
+            cursor = conn.cursor()
+            cursor.execute('UPDATE boxes SET status="retrieved", retrieval_date=CURRENT_TIMESTAMP WHERE box_id=?', (box_id,))
+            cursor.execute('''
+                INSERT INTO operations_log (box_id, operation, distance_traveled)
+                VALUES (?, 'RETRIEVED', ?)
+            ''', (box_id, distance))
+            conn.commit()
+            conn.close()
+            # UI updates
+            self.log_text.append(f"✅ Retrieved Box #{box_id} from ({row}, {col}) - Distance: {distance}m")
+            self.retrieve_input.clear()
+            self.update_stats()
+            self.update_inventory_table()
+            self.refresh_grid()
+            self.show_alert("Retrieval Successful", f"Item retrieved successfully!\n\nDistance traveled: {distance} units", "info")
     
     def update_stats(self):
         """Update statistics display"""

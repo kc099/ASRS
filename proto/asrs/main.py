@@ -19,7 +19,12 @@ def main():
     
     # Create and show main window
     window = BusinessASRSMainWindow()
-    window.show()
+
+    # Show maximized for large screens, normal for others
+    if window.should_maximize:
+        window.showMaximized()
+    else:
+        window.show()
     
     sys.exit(app.exec())
 
