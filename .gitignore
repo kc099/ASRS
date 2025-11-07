@@ -1,0 +1,9 @@
+*.json
+*.jpg
+*.png
+*.log
+*.db
+*.zip
+__pycache__/
+
+
