@@ -161,19 +161,26 @@ class BusinessASRSMainWindow(QMainWindow):
                 background-color: {COLORS['secondary']};
             }}
         """)
-        
+        splitter.setChildrenCollapsible(False)
+
         # Left Panel - Controls
         left_panel = self.create_left_panel()
         splitter.addWidget(left_panel)
-        
+
         # Center Panel - Visualization
         center_panel = self.create_center_panel()
         splitter.addWidget(center_panel)
-        
+
         # Right Panel - Info
         right_panel = self.create_right_panel()
         splitter.addWidget(right_panel)
-        
+
+        # Set stretch factors: left (0), center (1), right (0)
+        # This makes the center panel expand/shrink while keeping side panels fixed
+        splitter.setStretchFactor(0, 0)  # Left panel - fixed
+        splitter.setStretchFactor(1, 1)  # Center panel - expandable
+        splitter.setStretchFactor(2, 0)  # Right panel - fixed
+
         splitter.setSizes([350, 800, 450])
         
         main_layout.addWidget(splitter)
@@ -243,6 +250,9 @@ class BusinessASRSMainWindow(QMainWindow):
         """Create left control panel"""
         panel = QFrame()
         panel.setStyleSheet(f"background-color: {COLORS['sidebar']}; padding: 15px;")
+        panel.setMinimumWidth(300)
+        panel.setMaximumWidth(450)
+        panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         layout = QVBoxLayout(panel)
         
         # Store Section
@@ -252,12 +262,16 @@ class BusinessASRSMainWindow(QMainWindow):
         # Model selection
         store_layout.addWidget(QLabel("Select Model:"))
         self.model_combo = QComboBox()
+        self.model_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.model_combo.setMinimumWidth(200)
         store_layout.addWidget(self.model_combo)
         
         # Description
         store_layout.addWidget(QLabel("Description:"))
         self.desc_input = QLineEdit()
         self.desc_input.setPlaceholderText("Item description")
+        self.desc_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.desc_input.setMinimumWidth(200)
         store_layout.addWidget(self.desc_input)
         
         # Store button
@@ -277,12 +291,15 @@ class BusinessASRSMainWindow(QMainWindow):
         self.retrieval_method_combo = QComboBox()
         self.retrieval_method_combo.addItems(['By ID', 'FIFO (First In)', 'LIFO (Last In)'])
         self.retrieval_method_combo.currentTextChanged.connect(self.on_retrieval_method_changed)
+        self.retrieval_method_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.retrieval_method_combo.setMinimumWidth(200)
         retrieve_layout.addWidget(self.retrieval_method_combo)
 
         # Box selection dropdown
         retrieve_layout.addWidget(QLabel("Select Box:"))
         self.retrieve_box_combo = QComboBox()
         self.retrieve_box_combo.setMinimumWidth(200)
+        self.retrieve_box_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         retrieve_layout.addWidget(self.retrieve_box_combo)
 
         # Refresh button for box list
@@ -425,6 +442,9 @@ class BusinessASRSMainWindow(QMainWindow):
         """Create right info panel"""
         panel = QFrame()
         panel.setStyleSheet(f"background-color: {COLORS['sidebar']}; padding: 15px;")
+        panel.setMinimumWidth(350)
+        panel.setMaximumWidth(550)
+        panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         layout = QVBoxLayout(panel)
         
         # Operations Log
