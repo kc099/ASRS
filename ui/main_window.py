@@ -206,6 +206,8 @@ class BusinessASRSMainWindow(QMainWindow):
         # Logo/Title
         title = QLabel("ASRS Warehouse Management System")
         title.setStyleSheet("font-size: 20px; font-weight: bold; color: white;")
+        title.setWordWrap(True)
+        title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         layout.addWidget(title)
         
         layout.addStretch()
@@ -301,9 +303,11 @@ class BusinessASRSMainWindow(QMainWindow):
         # Quick Stats
         stats_group = QGroupBox("📊 Quick Stats")
         stats_layout = QVBoxLayout(stats_group)
-        
+
         self.stats_label = QLabel()
         self.stats_label.setWordWrap(True)
+        self.stats_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.stats_label.setTextFormat(Qt.RichText)
         self.update_stats()
         stats_layout.addWidget(self.stats_label)
         
@@ -426,10 +430,10 @@ class BusinessASRSMainWindow(QMainWindow):
         # Operations Log
         log_group = QGroupBox("📋 Operations Log")
         log_layout = QVBoxLayout(log_group)
-        
+
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(250)
+        self.log_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         log_layout.addWidget(self.log_text)
         
         clear_log_btn = QPushButton("🗑️ Clear Log")
@@ -441,11 +445,12 @@ class BusinessASRSMainWindow(QMainWindow):
         # Inventory Table
         inventory_group = QGroupBox("📦 Current Inventory")
         inventory_layout = QVBoxLayout(inventory_group)
-        
+
         self.inventory_table = QTableWidget()
         self.inventory_table.setColumnCount(4)
         self.inventory_table.setHorizontalHeaderLabels(['Box ID', 'SKU', 'Model', 'Date'])
         self.inventory_table.horizontalHeader().setStretchLastSection(True)
+        self.inventory_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.update_inventory_table()
         inventory_layout.addWidget(self.inventory_table)
         
@@ -468,23 +473,31 @@ class BusinessASRSMainWindow(QMainWindow):
             color_label = QLabel()
             color_label.setFixedSize(20, 20)
             color_label.setStyleSheet(f"background-color: {zone_info['color'].name()}; border-radius: 3px;")
-            
+
+            text_label = QLabel(zone_info['name'])
+            text_label.setWordWrap(True)
+            text_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
             item_layout = QHBoxLayout()
             item_layout.addWidget(color_label)
-            item_layout.addWidget(QLabel(zone_info['name']))
+            item_layout.addWidget(text_label)
             legend_layout.addLayout(item_layout)
 
         empty_label = QLabel()
         empty_label.setFixedSize(20, 20)
         empty_label.setStyleSheet(f"background-color: {COLORS['secondary']}; border-radius: 3px;")
-        
+
+        empty_text_label = QLabel("Empty Slot")
+        empty_text_label.setWordWrap(True)
+        empty_text_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
         item_layout = QHBoxLayout()
         item_layout.addWidget(empty_label)
-        item_layout.addWidget(QLabel("Empty Slot"))
+        item_layout.addWidget(empty_text_label)
         legend_layout.addLayout(item_layout)
 
         legend_layout.addStretch()
-        
+
         return legend_group
     
     def load_models(self):
@@ -947,12 +960,12 @@ class BusinessASRSMainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Handle window close"""
-        if self.show_alert(
+        response = self.show_alert(
             'Confirm Exit',
             'Save warehouse state before exiting?',
             icon_type="question"
-        ):
+        )
+        if response:  # User clicked Yes - save and exit
             self.save_state()
-            event.accept()
-        else:
-            event.ignore()
+        # Always accept the event (exit) whether user clicks Yes or No
+        event.accept()
